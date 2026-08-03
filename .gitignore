@@ -1,0 +1,23 @@
+# Systèmes de fichiers
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Éditeurs
+.vscode/
+.idea/
+*.swp
+*~
+
+# Sauvegardes et brouillons
+*.bak
+*.orig
+mindflow-*.html
+
+# Exports produits par l'application (ils ne sont pas du code source)
+*.svg
+*.png
+*.pdf
+*.mm
+*.opml
+mindflow-*.json
