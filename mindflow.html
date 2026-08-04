@@ -2,6 +2,28 @@
 <html lang="fr">
 <head>
 <meta charset="UTF-8">
+<!-- ═══ POLITIQUE DE SÉCURITÉ DE CONTENU ═══
+     Doit précéder tout chargement de ressource pour s'y appliquer.
+     Objectif principal : couper les canaux d'exfiltration. Même si un script
+     hostile parvenait à s'exécuter, il ne pourrait ni appeler un serveur tiers
+     (connect-src), ni poster un formulaire (form-action), ni charger une image
+     vers un domaine externe (img-src), ni détourner les URL relatives (base-uri).
+     'unsafe-inline' reste nécessaire : l'interface compte 114 gestionnaires
+     d'événements en attribut, que ni les empreintes ni les nonces ne couvrent.
+     Voir CLAUDE.md pour la marche à suivre si l'on veut s'en passer. -->
+<meta http-equiv="Content-Security-Policy" content="
+  default-src 'self';
+  script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com;
+  style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
+  font-src 'self' data: https://fonts.gstatic.com;
+  img-src 'self' data: blob:;
+  media-src 'none';
+  connect-src 'self';
+  frame-src 'self' blob:;
+  worker-src 'none';
+  object-src 'none';
+  base-uri 'none';
+  form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -850,7 +872,25 @@ const DB={
 const uid=()=>'n'+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
 const cl=(v,a,b)=>Math.max(a,Math.min(b,v));
 const fmtd=d=>new Date(d).toLocaleDateString('fr',{day:'numeric',month:'short'});
-const esc=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+const esc=s=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;')
+  .replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+
+/* ═══ ASSAINISSEMENT DES DONNÉES EXTERNES ═══
+   Les tags, couleurs, polices et images peuvent provenir d'un fichier importé
+   ou d'un JSON collé. Tout ce qui finit dans un attribut HTML/SVG passe par
+   ces filtres : on valide la forme, on ne se contente pas d'échapper. */
+const RE_COL=/^(#[0-9a-f]{3,8}|rgba?\(\s*[\d.]+\s*,\s*[\d.]+\s*,\s*[\d.]+\s*(,\s*[\d.]+\s*)?\))$/i;
+function safeColor(c,fb){
+  return (typeof c==='string'&&RE_COL.test(c.trim()))?c.trim():(fb||'#6366f1');
+}
+const RE_FONT=/^[\w \-]{1,48}$/;
+function safeFont(f,fb){
+  return (typeof f==='string'&&RE_FONT.test(f.trim()))?f.trim():(fb||'Plus Jakarta Sans');
+}
+// Seules les images matricielles encodées en base64 sont acceptées :
+// une data-URL SVG est du document, donc un vecteur d'exécution.
+const RE_IMG=/^data:image\/(png|jpe?g|gif|webp);base64,[A-Za-z0-9+/]+={0,2}$/;
+function safeImg(u){return (typeof u==='string'&&RE_IMG.test(u))?u:null;}
 function dep(id){let d=0,c=id;while((N[c] && N[c].parentId)){d++;c=N[c].parentId;if(d>99)break;}return d;}
 
 /* PROJECTS */
@@ -1143,10 +1183,11 @@ function buildTagPicker(){
     var has=nd.tags.some(function(x){ return x.name===t.name; });
     var row=document.createElement('div');
     row.className='tprow';
-    row.innerHTML='<div class="tpchk'+(has?' on':'')+'" style="background:'+(has?t.color:'transparent')+'">'+
+    var col=safeColor(t.color);
+    row.innerHTML='<div class="tpchk'+(has?' on':'')+'" style="background:'+(has?col:'transparent')+'">'+
       (has?'✓':'')+'</div>'+
-      '<span class="tplbl">'+t.name+'</span>'+
-      '<span style="width:12px;height:12px;border-radius:50%;background:'+t.color+';flex-shrink:0;display:inline-block"></span>';
+      '<span class="tplbl">'+esc(t.name)+'</span>'+
+      '<span style="width:12px;height:12px;border-radius:50%;background:'+col+';flex-shrink:0;display:inline-block"></span>';
     row.addEventListener('click', function(){ nodeToggleTag(SEL, t); });
     row.addEventListener('touchend', function(e){ e.preventDefault(); nodeToggleTag(SEL, t); });
     list.appendChild(row);
@@ -1351,8 +1392,8 @@ function pasteTagsFromArea(){
     if(!valid.length){ toast('Aucun tag valide trouvé','er'); return; }
     // Normalize
     valid.forEach(function(t){
-      t.name=t.name.trim();
-      if(!t.color||!/^#/.test(t.color)) t.color='#6366f1';
+      t.name=t.name.trim().slice(0,64);
+      t.color=safeColor(t.color);
     });
     TAGS_DEF.splice(0,TAGS_DEF.length,...valid);
     buildTagManager();
@@ -1797,10 +1838,14 @@ function setupImgDrop(el, nodeId){
     var _n=el.closest('.node');_n&&_n.classList.remove('imgdrop');
     const file=e.dataTransfer.files[0];
     if(file){attachImageFile(nodeId,file);return;}
-    // URL drop (e.g. from browser image)
+    // Dépôt d'une URL (image glissée depuis un autre onglet).
+    // La CSP restreint connect-src à 'self' : cette récupération distante est
+    // volontairement bloquée, car autoriser les appels sortants rouvrirait le
+    // canal d'exfiltration que la CSP a pour but de fermer. Le glissement de
+    // fichier et le collage restent les voies normales.
     const url=e.dataTransfer.getData('text/uri-list')||e.dataTransfer.getData('text/plain');
     if(url&&url.startsWith('http')){
-      fetch(url).then(r=>r.blob()).then(b=>attachImageFile(nodeId,b)).catch(()=>toast('Image inaccessible','er'));
+      toast('Glissez le fichier image, ou copiez-collez l\u2019image elle-m\u00eame','er');
     }
   });
 }
@@ -3823,11 +3868,15 @@ async function readTextWithFallback(file){
 function normalizeGMind(inner){
   const RE_HTML=/<[^>]+>/g;
   // Decode HTML entities (GitMind stores text as innerHTML: &eacute; &agrave; &amp; etc.)
-  const _ent=document.createElement('textarea');
+  // DOMParser construit un document inerte : aucun script n'y est exécuté,
+  // contrairement à une affectation innerHTML même sur un élément détaché.
+  const _dp=new DOMParser();
   function strip(s){
     if(!s)return'';
-    _ent.innerHTML=s.replace(RE_HTML,'');
-    return _ent.value.trim();
+    try{
+      return (_dp.parseFromString(s.replace(RE_HTML,''),'text/html')
+        .documentElement.textContent||'').trim();
+    }catch(e){return String(s).replace(RE_HTML,'').trim();}
   }
 
   function convNode(nd){
@@ -4268,8 +4317,8 @@ function buildSVG(o){
   // — Liaisons hiérarchiques, dégradé parent → enfant —
   edgeList(v).forEach((e,i)=>{
     const gm=edgeGeom(e.pid,e.cid,OX,OY);if(!gm)return;
-    const cs=(N[e.pid].s&&N[e.pid].s.bg)||'#6366f1';
-    const cd=(N[e.cid].s&&N[e.cid].s.bg)||'#22d3ee';
+    const cs=safeColor(N[e.pid].s&&N[e.pid].s.bg,'#6366f1');
+    const cd=safeColor(N[e.cid].s&&N[e.cid].s.bg,'#22d3ee');
     const id='mfg'+i;
     defs+=`<linearGradient id="${id}" gradientUnits="userSpaceOnUse" `
         + `x1="${gm.sx.toFixed(1)}" y1="${gm.sy.toFixed(1)}" x2="${gm.dx.toFixed(1)}" y2="${gm.dy.toFixed(1)}">`
@@ -4299,7 +4348,7 @@ function buildSVG(o){
     const x=nd.x-OX,y=nd.y-OY;
     const sh=nd.shape||'rounded';
     const st=nd.s||{};
-    const bgc=st.bg||'#6366f1';
+    const bgc=safeColor(st.bg,'#6366f1');
     const clip='mfc'+id;
     let shapeEl='',clipEl='';
 
@@ -4322,9 +4371,11 @@ function buildSVG(o){
 
     const B=ndBoxes(nd,w,h);
 
-    if(nd.img&&sh!=='circle'){
+    const imgSrc=safeImg(nd.img);
+    if(imgSrc&&sh!=='circle'){
       g+=`<image x="${x}" y="${y}" width="${w}" height="${B.imgH}" `
-        + `preserveAspectRatio="xMidYMid slice" clip-path="url(#${clip})" xlink:href="${nd.img}" href="${nd.img}"/>`;
+        + `preserveAspectRatio="xMidYMid slice" clip-path="url(#${clip})" `
+        + `xlink:href="${imgSrc}" href="${imgSrc}"/>`;
     }
 
     // Texte
@@ -4336,8 +4387,8 @@ function buildSVG(o){
     const startY=cy-((lines.length-1)*lh)/2;
     const anchor=sh==='circle'?'middle':'start';
     const tx=sh==='circle'?x+w/2:x+12;
-    g+=`<text x="${tx}" y="${startY.toFixed(1)}" fill="${st.color||'#f1f5f9'}" `
-      + `font-family="${xesc(st.font||'Plus Jakarta Sans')}, sans-serif" font-size="${size}" `
+    g+=`<text x="${tx}" y="${startY.toFixed(1)}" fill="${safeColor(st.color,'#f1f5f9')}" `
+      + `font-family="${safeFont(st.font)}, sans-serif" font-size="${size}" `
       + `font-weight="${st.bold?700:400}"${st.italic?' font-style="italic"':''}`
       + `${st.underline?' text-decoration="underline"':''} `
       + `dominant-baseline="central" text-anchor="${anchor}">`;
@@ -4352,7 +4403,7 @@ function buildSVG(o){
       nd.tags.forEach(t=>{
         _meas.font='700 10px "Plus Jakarta Sans", sans-serif';
         const tw=_meas.measureText(t.name).width+16;
-        g+=`<rect x="${tx2.toFixed(1)}" y="${ty}" width="${tw.toFixed(1)}" height="16" rx="8" fill="${t.color}"/>`
+        g+=`<rect x="${tx2.toFixed(1)}" y="${ty}" width="${tw.toFixed(1)}" height="16" rx="8" fill="${safeColor(t.color)}"/>`
          + `<text x="${(tx2+tw/2).toFixed(1)}" y="${ty+8}" fill="#fff" font-family="Plus Jakarta Sans, sans-serif" `
          + `font-size="10" font-weight="700" text-anchor="middle" dominant-baseline="central">${xesc(t.name)}</text>`;
         tx2+=tw+4;
@@ -4426,8 +4477,8 @@ async function exportPDF(){
     // Liaisons — un PDF ne fait pas de dégradé simple : couleur médiane
     edgeList(v).forEach(e=>{
       const gm=edgeGeom(e.pid,e.cid,OX,OY);if(!gm)return;
-      const cs=(N[e.pid].s&&N[e.pid].s.bg)||'#6366f1';
-      const cd=(N[e.cid].s&&N[e.cid].s.bg)||'#22d3ee';
+      const cs=safeColor(N[e.pid].s&&N[e.pid].s.bg,'#6366f1');
+      const cd=safeColor(N[e.cid].s&&N[e.cid].s.bg,'#22d3ee');
       pdf.setDrawColor(mixHex(cs,cd,.5));
       pdf.setLineWidth(dep(e.pid)===0?2.5:2);
       pdf.setLineCap('round');
@@ -4444,7 +4495,7 @@ async function exportPDF(){
     v.forEach(id=>{
       const nd=N[id],{w,h}=ndSize(id);
       const x=nd.x-OX,y=nd.y-OY,sh=nd.shape||'rounded',st=nd.s||{};
-      pdf.setFillColor(st.bg||'#6366f1');
+      pdf.setFillColor(safeColor(st.bg,'#6366f1'));
       if(sh==='circle'){
         pdf.circle(x+w/2,y+h/2,Math.min(w,h)/2,'F');
       }else if(sh==='hex'){
@@ -4456,14 +4507,15 @@ async function exportPDF(){
       }
 
       const B=ndBoxes(nd,w,h);
-      if(nd.img&&sh!=='circle'){
-        try{pdf.addImage(nd.img,'JPEG',x,y,w,B.imgH);}catch(e){}
+      const pimg=safeImg(nd.img);
+      if(pimg&&sh!=='circle'){
+        try{pdf.addImage(pimg,'JPEG',x,y,w,B.imgH);}catch(e){}
       }
 
       const size=st.size||15;
       pdf.setFont(pdfFontOf(st.font),pdfStyle(st));
       pdf.setFontSize(size);
-      pdf.setTextColor(st.color||'#f1f5f9');
+      pdf.setTextColor(safeColor(st.color,'#f1f5f9'));
       const maxW=sh==='circle'?w-16:w-24;
       const lines=pdf.splitTextToSize(String(nd.text||''),maxW);
       const lh=size*1.4;
@@ -4479,7 +4531,7 @@ async function exportPDF(){
         pdf.setFontSize(8);pdf.setFont('helvetica','bold');
         nd.tags.forEach(t=>{
           const tw=pdf.getTextWidth(t.name)+14;
-          pdf.setFillColor(t.color);
+          pdf.setFillColor(safeColor(t.color));
           pdf.roundedRect(tx,ty,tw,16,8,8,'F');
           pdf.setTextColor('#ffffff');
           pdf.text(t.name,tx+tw/2,ty+8,{align:'center',baseline:'middle'});
