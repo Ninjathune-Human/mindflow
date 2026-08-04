@@ -13,12 +13,12 @@
      Voir CLAUDE.md pour la marche à suivre si l'on veut s'en passer. -->
 <meta http-equiv="Content-Security-Policy" content="
   default-src 'self';
-  script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com;
+  script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://www.gstatic.com;
   style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
   font-src 'self' data: https://fonts.gstatic.com;
   img-src 'self' data: blob:;
   media-src 'none';
-  connect-src 'self';
+  connect-src 'self' https://*.googleapis.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://*.firebaseio.com;
   frame-src 'self' blob:;
   worker-src 'none';
   object-src 'none';
@@ -406,6 +406,15 @@ button{cursor:pointer;border:none;background:none;color:inherit}
 .modal textarea:focus{border-color:var(--acc)}
 .modal textarea::placeholder{color:var(--txm)}
 .mact{display:flex;gap:8px;justify-content:flex-end;margin-top:4px}
+/* AUTH MODAL */
+#authovr{display:none;position:fixed;inset:0;z-index:900;background:var(--ovbg);backdrop-filter:blur(8px);align-items:center;justify-content:center}
+#authovr.op{display:flex}
+#authmod input[type=email],#authmod input[type=password]{display:block;width:100%;margin-bottom:10px;padding:9px 12px;background:var(--sf2);border:1px solid var(--bd);border-radius:var(--r2);color:var(--tx);font-size:13.5px;outline:none;transition:border-color .15s}
+#authmod input:focus{border-color:var(--acc)}
+#authmod input::placeholder{color:var(--txm)}
+#autherr{background:var(--sf2);color:var(--err);border:1px solid var(--err);border-radius:var(--r2);padding:8px 12px;font-size:12.5px;margin-bottom:10px}
+.authlinks{display:flex;justify-content:space-between;margin-top:14px}
+.authlinks span{font-size:12px;color:var(--acc);cursor:pointer;text-decoration:underline;text-underline-offset:2px}
 .flbl{display:inline-flex;align-items:center;gap:7px;cursor:pointer;font-size:12px;color:var(--txd);padding:7px 12px;border-radius:var(--r2);background:var(--sf3);border:1px dashed var(--bd2);transition:all .15s;margin-bottom:14px}
 .flbl:hover{border-color:var(--acc);color:var(--acc)}
 /* DIALOG (replaces prompt/confirm — works on iOS) */
@@ -507,7 +516,7 @@ button{cursor:pointer;border:none;background:none;color:inherit}
 
 /* ── IMPRESSION DIRECTE (Ctrl+P navigateur) ── */
 @media print{
-  #sb,#sbcol,#tb,#zhud,#hlp,#selbar,#toast,#prog,#ctx,#ov,#dlg,#tagmgr,#tagpick,
+  #sb,#sbcol,#tb,#zhud,#hlp,#selbar,#toast,#prog,#ctx,#ov,#authovr,#dlg,#tagmgr,#tagpick,
   #tagfilt,#lbox,#srch,#prt,.cpp,#shpop,#expop,#marq,#empt{display:none!important}
   html,body{background:#fff!important;overflow:visible!important;height:auto!important}
   #cvs::before{display:none}
@@ -609,6 +618,8 @@ button{cursor:pointer;border:none;background:none;color:inherit}
   <div class="sep"></div>
   <button class="t" onclick="applyRadialLayout()" title="Disposition radiale">⊛ Radial</button>
   <button class="t" onclick="applyTreeLayout()" title="Disposition arbre gauche→droite">⊞ Arbre</button>
+  <div class="sep"></div>
+  <button class="t" id="btnauth" onclick="openAuthModal()" title="Connexion / Synchronisation cloud">☁ Connexion</button>
 
 </header>
 
@@ -768,6 +779,26 @@ button{cursor:pointer;border:none;background:none;color:inherit}
   </div>
 </div>
 
+<!-- AUTH MODAL -->
+<div id="authovr" onclick="authOvrClick(event)">
+  <div class="modal" id="authmod">
+    <h2 id="authtitle">Connexion</h2>
+    <p class="sub" id="authsub">Entrez vos identifiants pour synchroniser vos cartes entre appareils.</p>
+    <input type="email" id="authemail" placeholder="Email" autocomplete="email">
+    <input type="password" id="authpass" placeholder="Mot de passe" autocomplete="current-password"
+      onkeydown="if(event.key==='Enter')doAuth()">
+    <div id="autherr" style="display:none"></div>
+    <div class="mact">
+      <button class="t" onclick="closeAuthModal()">Annuler</button>
+      <button class="t ac" id="authbtn" onclick="doAuth()">Se connecter</button>
+    </div>
+    <div class="authlinks">
+      <span id="authtoggle" onclick="authToggleMode()">Créer un compte</span>
+      <span onclick="authResetPass()">Mot de passe oublié ?</span>
+    </div>
+  </div>
+</div>
+
 <div id="toast"></div>
 
 <!-- LIGHTBOX -->
@@ -790,6 +821,206 @@ let VP={x:0,y:0,s:1},drag=null,ctxId=null;
 let hist=[],hidx=-1,savT=null,toastT=null,sbOpen=true,srchQ='';
 
 /* DB */
+/* ═══════════════════════════════════════════════════════════════
+   CONFIGURATION FIREBASE — profils et synchronisation cloud
+   ─────────────────────────────────────────────────────────────
+   1. Créez un projet sur https://console.firebase.google.com/
+   2. Activez Authentication → Email/mot de passe
+   3. Activez Firestore Database (mode production)
+   4. Définissez les règles Firestore :
+        match /users/{uid} {
+          allow read, write: if request.auth != null && request.auth.uid == uid;
+        }
+   5. Copiez votre config ci-dessous (Project settings → Your apps)
+   Laissez l'objet vide ({}) pour rester en mode local uniquement.
+   ═══════════════════════════════════════════════════════════════ */
+const FIREBASE_CFG={
+  apiKey:            "AIzaSyD0cxeqsfpCeW9VoriHvolSsZU5cLz8Xi0",
+  authDomain:        "mindflow-72323.firebaseapp.com",
+  projectId:         "mindflow-72323",
+  storageBucket:     "mindflow-72323.firebasestorage.app",
+  messagingSenderId: "718736305745",
+  appId:             "1:718736305745:web:4f4083e1857a69b60f9270"
+};
+
+let _auth=null,_fstore=null,_fbUser=null,_fbPrevUser=undefined,_initDone=false;
+
+function _fbCfgOk(){return Object.values(FIREBASE_CFG).some(v=>v&&String(v).length>0);}
+function _fbReady(){return _auth!==null&&_fstore!==null;}
+
+(function loadFbSdk(){
+  if(!_fbCfgOk()) return;
+  var V='10.12.0',B='https://www.gstatic.com/firebasejs/'+V+'/';
+  var n=0;
+  function onSub(){if(++n===2)initFirebase();}
+  function fbsc(name,cb){
+    var s=document.createElement('script');s.src=B+name;s.async=true;
+    s.onload=cb;s.onerror=function(){console.warn('Firebase CDN indisponible:',name);};
+    document.head.appendChild(s);
+  }
+  fbsc('firebase-app-compat.js',function(){
+    fbsc('firebase-auth-compat.js',onSub);
+    fbsc('firebase-firestore-compat.js',onSub);
+  });
+})();
+
+function initFirebase(){
+  try{
+    if(!firebase.apps.length) firebase.initializeApp(FIREBASE_CFG);
+    _auth=firebase.auth();
+    _fstore=firebase.firestore();
+    _auth.onAuthStateChanged(onFbAuth);
+  }catch(e){console.warn('Firebase init:',e);}
+}
+
+async function onFbAuth(user){
+  _fbUser=user;
+  _updateAuthBtn();
+  if(_initDone){
+    if(user&&!_fbPrevUser){
+      await cloudLoad();
+      toast('Connecté : '+user.email,'ok');
+    } else if(!user&&_fbPrevUser){
+      toast('Déconnecté — données locales conservées','ok');
+    }
+  }
+  _fbPrevUser=user;
+}
+
+/* ─── Sync cloud ─── */
+async function cloudSave(){
+  if(!_fbReady()||!_fbUser||!Object.keys(P).length) return;
+  try{
+    await _fstore.doc('users/'+_fbUser.uid)
+      .set({projects:JSON.stringify(P),updated:Date.now()});
+  }catch(e){console.warn('cloudSave:',e);}
+}
+
+async function cloudLoad(){
+  if(!_fbReady()||!_fbUser) return;
+  try{
+    const snap=await _fstore.doc('users/'+_fbUser.uid).get();
+    if(!snap.exists||!snap.data().projects) return;
+    const remote=JSON.parse(snap.data().projects);
+    Object.assign(P,remote);
+    await DB.s('mf-p',JSON.stringify(P));
+    const last=Object.entries(P).sort(([,a],[,b])=>b.updated-a.updated)[0];
+    if(last){
+      CUR=last[0];const p=P[CUR];
+      N=JSON.parse(JSON.stringify(p.nodes||{}));
+      ROOT=p.rootId||null;
+      VP={x:60,y:40,s:1,...(p.vp||{})};
+      document.getElementById('pttl').value=p.name||'Sans titre';
+      setVP(VP.x,VP.y,VP.s);render();renderSB();upFmt();upEmpty();
+    }
+  }catch(e){console.warn('cloudLoad:',e);}
+}
+
+/* ─── Auth UI ─── */
+let _authMode='login';
+
+function openAuthModal(){
+  if(!_fbCfgOk()){
+    toast('Firebase non configuré — renseignez FIREBASE_CFG dans le code','er');
+    return;
+  }
+  if(_fbUser){
+    if(confirm('Déconnexion de '+_fbUser.email+' ?'))
+      _auth.signOut().catch(()=>{});
+    return;
+  }
+  _authMode='login';
+  _syncAuthModal();
+  document.getElementById('authovr').classList.add('op');
+  setTimeout(()=>document.getElementById('authemail').focus(),80);
+}
+
+function closeAuthModal(){
+  document.getElementById('authovr').classList.remove('op');
+  document.getElementById('autherr').style.display='none';
+  document.getElementById('authpass').value='';
+}
+
+function authOvrClick(e){
+  if(e.target===document.getElementById('authovr')) closeAuthModal();
+}
+
+function authToggleMode(){
+  _authMode=_authMode==='login'?'register':'login';
+  _syncAuthModal();
+}
+
+function _syncAuthModal(){
+  const login=_authMode==='login';
+  document.getElementById('authtitle').textContent=login?'Connexion':'Créer un compte';
+  document.getElementById('authsub').textContent=login
+    ?'Entrez vos identifiants pour synchroniser vos cartes entre appareils.'
+    :'Choisissez un email et un mot de passe (6 caractères min.).';
+  document.getElementById('authbtn').textContent=login?'Se connecter':'Créer le compte';
+  document.getElementById('authtoggle').textContent=login?'Créer un compte':'J\'ai déjà un compte';
+  document.getElementById('autherr').style.display='none';
+}
+
+function _updateAuthBtn(){
+  const btn=document.getElementById('btnauth');
+  if(!btn) return;
+  if(_fbUser){
+    const name=(_fbUser.email||'').split('@')[0];
+    btn.textContent='☁ '+name;
+    btn.title='Connecté : '+_fbUser.email+'\nCliquez pour vous déconnecter';
+    btn.classList.add('ac');
+  } else {
+    btn.textContent='☁ Connexion';
+    btn.title='Connexion / Synchronisation cloud';
+    btn.classList.remove('ac');
+  }
+}
+
+async function doAuth(){
+  if(!_fbReady()){toast('Firebase non disponible','er');return;}
+  const email=document.getElementById('authemail').value.trim();
+  const pass=document.getElementById('authpass').value;
+  const errDiv=document.getElementById('autherr');
+  const btn=document.getElementById('authbtn');
+  errDiv.style.display='none';btn.disabled=true;
+  try{
+    if(_authMode==='login'){
+      await _auth.signInWithEmailAndPassword(email,pass);
+    } else {
+      await _auth.createUserWithEmailAndPassword(email,pass);
+    }
+    closeAuthModal();
+  }catch(e){
+    errDiv.textContent=_fbErrMsg(e.code);
+    errDiv.style.display='block';
+  }finally{btn.disabled=false;}
+}
+
+async function authResetPass(){
+  if(!_fbReady()) return;
+  const email=document.getElementById('authemail').value.trim();
+  if(!email){toast('Entrez votre email d\'abord','er');return;}
+  try{
+    await _auth.sendPasswordResetEmail(email);
+    toast('Email de réinitialisation envoyé — vérifiez votre boîte','ok');
+    closeAuthModal();
+  }catch(e){toast(_fbErrMsg(e.code),'er');}
+}
+
+function _fbErrMsg(code){
+  const map={
+    'auth/invalid-email':'Adresse email invalide.',
+    'auth/user-not-found':'Aucun compte avec cet email.',
+    'auth/wrong-password':'Mot de passe incorrect.',
+    'auth/email-already-in-use':'Cet email est déjà utilisé.',
+    'auth/weak-password':'Mot de passe trop court (6 caractères min.).',
+    'auth/too-many-requests':'Trop de tentatives — réessayez plus tard.',
+    'auth/network-request-failed':'Erreur réseau.',
+    'auth/invalid-credential':'Email ou mot de passe incorrect.',
+  };
+  return map[code]||'Erreur : '+code;
+}
+
 /* */
 const _mem={};
 
@@ -895,7 +1126,10 @@ function dep(id){let d=0,c=id;while((N[c] && N[c].parentId)){d++;c=N[c].parentId
 
 /* PROJECTS */
 async function loadAllP(){try{const r=await DB.g('mf-p');if(r)P=JSON.parse(r);}catch(e){}}
-async function saveAllP(){await DB.s('mf-p',JSON.stringify(P));}
+async function saveAllP(){
+  await DB.s('mf-p',JSON.stringify(P));
+  cloudSave(); // fire-and-forget — sync vers Firestore si connecté
+}
 
 /* */
 let _dlgResolve=null;
@@ -4813,6 +5047,11 @@ async function init(){
   });
   window.addEventListener('beforeunload',()=>{ saveNow(); });
   window.addEventListener('pointerup',()=>{ if(CUR&&P[CUR]) sched(); },{passive:true});
+
+  // Sync cloud : si déjà connecté (session persistée), charge les données distantes
+  _initDone=true;
+  _fbPrevUser=_fbUser;
+  if(_fbUser){ _updateAuthBtn(); await cloudLoad(); toast('Connecté : '+_fbUser.email,'ok'); }
 }
 
 
