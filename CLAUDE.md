@@ -61,20 +61,82 @@ avant.
 `DB.g()` / `DB.s()` écrivent sur les quatre couches en parallèle et lisent la
 première disponible. Ne pas appeler `localStorage` ou IndexedDB directement.
 
+## Sécurité
+
+### Assainissement des données externes
+
+Tags, couleurs, polices et images peuvent venir d'un fichier importé ou d'un
+JSON collé. Trois filtres valident leur **forme**, ils ne se contentent pas
+d'échapper : `safeColor()`, `safeFont()`, `safeImg()`.
+
+Toute valeur issue des données qui finit dans un attribut HTML ou SVG doit
+passer par l'un d'eux. `esc()` sert au texte libre — il échappe aussi les
+guillemets, il est donc utilisable en contexte d'attribut.
+
+`safeImg()` refuse les data-URL SVG : un SVG est un document, donc un porteur
+de script. Ne pas les réautoriser « pour la qualité vectorielle ».
+
+Ne jamais décoder d'entités HTML par affectation `innerHTML`, même sur un
+élément détaché. Utiliser `DOMParser`, qui construit un document inerte.
+
+### Politique de sécurité de contenu
+
+La CSP est déclarée en `<meta>` dans le `<head>`, **avant tout chargement de
+ressource**. GitHub Pages ne permettant pas de définir d'en-têtes HTTP, c'est
+la seule voie possible — avec deux limites : `frame-ancestors` et `report-uri`
+sont inopérants en `<meta>`.
+
+Contrat en vigueur :
+
+- `connect-src 'self'` — aucun appel réseau sortant. C'est la directive la
+  plus importante : elle ferme le canal d'exfiltration. Toute fonction
+  nécessitant un appel distant doit l'élargir explicitement et sciemment.
+- `script-src` — seul `cdnjs.cloudflare.com` est autorisé, pour jsPDF et
+  JSZip. Ne pas ajouter de CDN sans nécessité.
+- `object-src 'none'`, `base-uri 'none'`, `form-action 'none'` — sans coût,
+  ferment le détournement d'URL relatives et l'exfiltration par formulaire.
+
+Ajouter une ressource externe impose de mettre la CSP à jour, sinon elle est
+bloquée silencieusement. Vérifier la console au moindre doute.
+
+**Pourquoi `'unsafe-inline'` subsiste :** l'interface compte 114 gestionnaires
+d'événements en attribut (`onclick="…"`). Ni les empreintes SHA-256 ni les
+nonces ne les couvrent — seule leur suppression le permettrait, en les
+convertissant tous en `addEventListener`. Les nonces sont de toute façon
+inapplicables ici : ils exigent une génération côté serveur, que l'hébergement
+statique ne fournit pas. Les empreintes fonctionneraient pour les deux blocs
+`<script>` et le bloc `<style>`, mais devraient être recalculées à **chaque**
+modification du fichier — friction réelle sur un fichier édité en continu.
+
+Ne pas entreprendre ce chantier sans demande explicite. Tant qu'il n'est pas
+fait, `'unsafe-inline'` n'annule pas la CSP : un script injecté s'exécuterait,
+mais sans pouvoir sortir la moindre donnée.
+
+### Avant d'ajouter l'authentification
+
+Le stockage du jeton de session est le point suivant : `localStorage` expose
+le compte entier à une XSS résiduelle, un cookie `httpOnly` ne l'expose pas.
+
 ## Vérifications après modification
 
 Le fichier n'a pas de tests automatisés. Après une passe, contrôler :
 
-1. La console est vide au chargement.
-2. Bascule jour / nuit : parcourir la barre d'outils, la barre latérale, le
+1. La console est vide au chargement. **Toute erreur mentionnant
+   « Content Security Policy » signale une ressource bloquée** : corriger la
+   CSP ou renoncer à la ressource, jamais élargir par réflexe.
+2. Impression : aperçu en A3 et en A1, fond blanc puis fond du thème. Le
+   document d'impression est écrit dans une iframe qui hérite de la CSP —
+   c'est le point le plus susceptible de casser après un durcissement.
+3. Export : télécharger un SVG et un PNG. Les téléchargements passent par des
+   URL `blob:` et `data:`, sensibles à la CSP.
+4. Bascule jour / nuit : parcourir la barre d'outils, la barre latérale, le
    menu contextuel, les modales d'import et d'impression, le gestionnaire de
    tags. Chercher le texte devenu illisible.
-3. Sélection multiple de trois nœuds : les trois sont cerclés, l'ancre est
+5. Sélection multiple de trois nœuds : les trois sont cerclés, l'ancre est
    plus marquée, et **toutes** leurs liaisons ressortent.
-4. Export SVG : ouvrir le fichier produit dans un navigateur, comparer à
-   l'écran. Vérifier que le texte est bien du texte, pas des tracés.
-5. Impression : aperçu en A3 et en A1, fond blanc puis fond du thème.
-6. Rechargement de la page : les cartes sont retrouvées.
+6. Ouvrir le SVG produit dans un navigateur, comparer à l'écran. Vérifier que
+   le texte est bien du texte, pas des tracés.
+7. Rechargement de la page : les cartes sont retrouvées.
 
 ## Langue
 
